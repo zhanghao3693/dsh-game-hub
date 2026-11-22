@@ -191,6 +191,3 @@ npm test        # 166 项断言
 ## License
 
 MIT
-
-<!-- claim verification -->
-DPH-CLAIM-a904d650f3303a63232c9fd33911c617
