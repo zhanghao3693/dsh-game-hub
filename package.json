@@ -1,6 +1,6 @@
 {
-  "name": "dsh-game-hub",
-  "version": "1.0.0",
+  "name": "@dpharness/dsh-game-hub",
+  "version": "1.0.1",
   "description": "游戏中心 —— 一个悬浮入口装下 11 款游戏：三国志战略、诺基亚弹珠台，以及复刻的贪吃蛇/俄罗斯方块/打砖块/2048/扫雷/小蜜蜂/五子棋/象棋/掼蛋。DeepSeek Harness 插件。",
   "keywords": [
     "dsh",
@@ -31,6 +31,9 @@
     "build": "node tools/import-legacy.mjs && node tools/build.mjs",
     "test": "node tools/test.mjs",
     "prepublishOnly": "npm run build && npm test"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "repository": {
     "type": "git",

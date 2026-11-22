@@ -7,4 +7,4 @@
 # name 是包名，dsh 由它解析 host 入口（main）与 client 入口（exports["./client"]）。
 - insert:
     - id: dsh-game-hub
-      name: 'dsh-game-hub'
+      name: '@dpharness/dsh-game-hub'
