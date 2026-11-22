@@ -190,9 +190,12 @@ function invStep(st, dt, input) {
         out.phase = "over";
         return out;
       }
-      /* 复活后短暂无敌感：清掉所有敌弹 */
-      out.enemyBullets = [];
-      continue;
+      /* 复活后短暂无敌感：清掉所有敌弹。
+       * 这里必须 length = 0 而不是重新赋值数组，并且要 break —— 外层是
+       * 倒序 for 循环，缓存的是索引 i，把数组换掉后下一轮读 out.enemyBullets[i]
+       * 就是 undefined，会抛 Cannot read properties of undefined。 */
+      out.enemyBullets.length = 0;
+      break;
     }
     if (b.y > INV_H) out.enemyBullets.splice(i, 1);
   }

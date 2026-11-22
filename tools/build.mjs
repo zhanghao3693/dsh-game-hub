@@ -45,9 +45,15 @@ for (const { f, tag } of parts) {
   body += `\n/* ================= ${tag}/${path.basename(f)} ================= */\n${code}\n`;
 }
 
-const out = `/* dsh-game-hub · 自动生成，勿手改；改 src/ 后跑 node tools/build.mjs */
+/* 模块 id 必须等于 package.json 的 name（含 scope）。
+ * 宿主按包名去客户端模块表里取 factory，id 对不上就取不到 —— 表现为
+ * 宿主 half 已 active、但页面上什么都不出现，且不报错。
+ * 这里直接从 package.json 读，避免以后改名时两处不同步。 */
+const PKG_NAME = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8")).name;
+
+const out = `/* ${PKG_NAME} · 自动生成，勿手改；改 src/ 后跑 node tools/build.mjs */
 window.__ModuleLoader__.load({
-  id: "dsh-game-hub",
+  id: ${JSON.stringify(PKG_NAME)},
   factory: (require) => {
     const module = { exports: {} };
     const exports = module.exports;

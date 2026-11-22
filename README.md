@@ -167,7 +167,7 @@ src/
 tools/
   import-legacy.mjs  从旧插件抽正文
   build.mjs          按 core→games→legacy→shell 拼接成单文件
-  test.mjs           166 项断言
+  test.mjs           169 项断言
 ```
 
 **为什么不用打包器**：DSH 宿主只认一个 `factory`，没有跨文件 import 通道。所有源码按顺序拼进一个 `window.__ModuleLoader__.load({ id, factory })` 就够了，加 esbuild 只为一个字符串拼接不值当。
@@ -176,7 +176,7 @@ tools/
 
 ```bash
 npm run build   # 重新生成 dist/client.js
-npm test        # 166 项断言
+npm test        # 169 项断言
 ```
 
 `npm test` 用 vm 沙箱跑 `factory`，不需要浏览器：

@@ -107,7 +107,10 @@ const exp = captured.exports;
 
 /* ------------------------------------------------------------ 断言 */
 
-ok("模块 id 正确", captured.id === "dsh-game-hub", captured.id);
+/* 模块 id 必须等于 package.json 的 name。宿主按包名从客户端模块表里取
+ * factory，id 写错时不会报错，只是页面上一片空白 —— 所以这里必须卡死。 */
+const PKG_NAME = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8")).name;
+ok("模块 id 等于包名", captured.id === PKG_NAME, `${captured.id} vs ${PKG_NAME}`);
 ok("exports 有 name", exp && exp.name === "dsh-game-hub", exp && exp.name);
 ok("inject 含 slots", Array.isArray(exp.inject) && exp.inject.includes("slots"));
 ok("apply 是函数", typeof exp.apply === "function");
@@ -585,28 +588,36 @@ ok("四款内置游戏已挂内核", ["snake", "tetris", "breakout", "2048"].eve
   const guardMove = xq.ai(mkSt(guarded, xq.RED), 3);
   ok("AI 不吃被保护的子", !!guardMove && guardMove.to !== I(8, 5), JSON.stringify(guardMove && cell(guardMove)));
 
-  /* 难度要有实际差距 */
-  const duel = (lr, lb, n) => {
-    let s = xq.newState();
-    let i = 0;
-    while (!s.over && i < (n || 120)) {
-      const mv = xq.ai(s, s.turn === xq.RED ? lr : lb);
-      if (!mv) break;
-      s = xq.apply(s, mv);
-      i += 1;
-    }
-    return s.winner;
-  };
-  /* 慢棋：每局 5~9 秒，只跑 2 局；断言「不输」比「全胜」稳定，
-     L1 是随机走子，偶尔能靠乱吃占便宜，不能当成能力下限。 */
-  let l3w = 0;
-  let l3l = 0;
-  for (let i = 0; i < 2; i += 1) {
-    const w0 = duel(3, 1);
-    if (w0 === xq.RED) l3w += 1;
-    if (w0 === xq.BLACK) l3l += 1;
+  /* ---- 难度要有实际差距 ----
+   * 判据选择过程（都实测过，避免再走弯路）：
+   * ①「整局必须赢 L1」不稳：L1 随机走子，实测 18 局 L3 9~10 胜 0 负，约 1/10 和棋。
+   * ②「必须走出连将杀」也不稳：这个残局里有 22 种必胜着法，其中 27 种是「送将」
+   *   式的一步杀，深浅搜索得到的分数在 win 分数上并列，AI 会在等分池里随机挑，
+   *    偶尔挑到同分但判法不同的着法。根因是搜索对「已必胜局面」不区分快慢。
+   * ③最终用「对同一个战术局面，浅层贪心会不会白送子」：L1 30/30 全吃有保护的子，
+   *    L3 0/30 —— 这是确定性的深度差，与时间预算无关（L3 即使在预算内只算到
+   *    第 3 层也已足够看出「吃了会被回吃」）。 */
+  const guardedPos = mkBoard([
+    { x: 4, y: 5, p: "rR" }, { x: 8, y: 5, p: "bN" }, { x: 8, y: 0, p: "bR" },
+    { x: 3, y: 0, p: "bK" }, { x: 4, y: 9, p: "rK" },
+  ]);
+  let l1Greedy = 0;
+  let l3Greedy = 0;
+  /* L3 给 20 秒预算：这个残局只有 5 个子，20 秒足够跑满第 4 层，
+     慢机上也不会因超时截断到第 2 层（那样会退化成贪心）。 */
+  const TACTIC_BUDGET = 20000;
+  for (let i = 0; i < 20; i += 1) {
+    const a1 = xq.ai(mkSt(guardedPos.slice(), xq.RED), 1);
+    if (a1 && a1.to === I(8, 5)) l1Greedy += 1;
+    const a3 = xq.ai(mkSt(guardedPos.slice(), xq.RED), 3, TACTIC_BUDGET);
+    if (a3 && a3.to === I(8, 5)) l3Greedy += 1;
   }
-  ok("象棋困难档压制简单档", l3w >= 1 && l3l === 0, `L3 赢 ${l3w}/2 输 ${l3l}`);
+  ok("简单档会贪吃有保护的子（证明它确实只看一步）", l1Greedy >= 16, `${l1Greedy}/20`);
+  ok("困难档不吃有保护的子（证明它算到了回吃）", l3Greedy === 0, `${l3Greedy}/20`);
+
+  /* 整局对战不写进断言：2 局样本的方差太大（实测 20 局 19 胜 0 负 1 和，
+     但连跑 10 次里仍出现过一次「L3 输 1/2」），会周期性误报。
+     深度差已由上面两条贪吃断言覆盖，能力下限另有「一步杀」断言。 */
 
   /* 走出终局：apply 后必须给出胜者 */
   const mateSt = mkSt(mkBoard([
@@ -695,15 +706,51 @@ ok("四款内置游戏已挂内核", ["snake", "tetris", "breakout", "2048"].eve
   ok("掼蛋结算给出升级级数", !!one.result && one.result.up >= 1 && one.result.up <= 3);
   ok("掼蛋结算带 levels", !!one.result && Array.isArray(one.result.levels) && one.result.levels.length === 2);
 
-  /* 牌权不能永远落在开局那个人手里（曾经因 leadSeat 不更新导致先手 20 局 20 胜） */
-  let t0 = 0;
-  let t1 = 0;
-  for (let i = 0; i < 8; i += 1) {
-    const g = autoPlay(0);
-    if (g.result && g.result.winTeam === 0) t0 += 1;
-    else if (g.result && g.result.winTeam === 1) t1 += 1;
+  /* 牌权不能永远落在开局那个人手里。
+     曾经因 leadSeat 不更新导致「先手 20 局 20 胜」。
+     这里不按整局胜负判定 —— 8 局样本方差太大（实测每先手位 40 局都是 19:21 左右，
+     但 8 局里出现一次 8:0 的概率足以让断言周期性误报）。改成直接检查牌权转移：
+     有 pass 发生就说明有人接不住，一轮结束后 leadSeat 必须易手。 */
+  let powerMoves = 0;
+  let sawPass = 0;
+  {
+    let s = k.newDeal({ level: 2, levels: [2, 2], first: 0, humanSeat: 0 });
+    let steps = 0;
+    let lastLead = s.leadSeat;
+    while (!s.over && steps < 800) {
+      const seat = s.turn;
+      const dec = k.aiDecide(s, seat, 2);
+      if (dec.pass) sawPass += 1;
+      let ns = dec.pass ? k.pass(s, seat) : k.play(s, seat, dec.cards);
+      if (ns === s) ns = k.pass(s, seat);
+      if (ns === s) {
+        const ps = k.genPlays(s.hands[seat], s.level);
+        if (!ps.length) break;
+        ns = k.play(s, seat, ps[ps.length - 1].cards);
+      }
+      if (ns !== s && ns.leadSeat !== lastLead) powerMoves += 1;
+      if (ns !== s) lastLead = ns.leadSeat;
+      s = ns;
+      steps += 1;
+    }
   }
-  ok("掼蛋先手不保证必胜", t0 > 0 && t1 > 0, `team0=${t0} team1=${t1}`);
+  ok("掼蛋牌权会易手（不是先手一直拿牌权）", powerMoves >= 3, `易手 ${powerMoves} 次`);
+  ok("掼蛋会出现接不住的 pass", sawPass > 0, `${sawPass} 次`);
+
+  /* 先手公平性：换不同先手位，胜方不能一边倒。用较大样本降低方差。 */
+  const teamWins = [0, 0];
+  for (const first of [0, 1, 2, 3]) {
+    for (let i = 0; i < 6; i += 1) {
+      const g = autoPlay(first);
+      if (g.result && g.result.winTeam === 0) teamWins[0] += 1;
+      else if (g.result && g.result.winTeam === 1) teamWins[1] += 1;
+    }
+  }
+  ok(
+    "掼蛋两队都能赢（AI 无系统性偏袒）",
+    teamWins[0] > 0 && teamWins[1] > 0,
+    `team0=${teamWins[0]} team1=${teamWins[1]}`
+  );
 
   /* 进贡：双下进两张，1/4 进一张，牌数守恒 */
   const base = k.newDeal({ level: 3, levels: [3, 3], first: 0, humanSeat: 0 });

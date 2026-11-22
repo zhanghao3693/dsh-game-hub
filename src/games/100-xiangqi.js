@@ -345,8 +345,11 @@ function xqNegamax(board, side, depth, alpha, beta) {
  * AI 选着。
  * @param {object} state
  * @param {number} level 1=简单 2=普通 3=困难
+ * @param {number} [budget] 思考时间预算（毫秒）。不传则用各档默认值。
+ *   测试里传一个大预算，可让搜索跑满目标深度、不受机器负载影响；
+ *   否则同样的局面在慢机上会提前超时截断，断言随之抖动。
  */
-function xqAi(state, level) {
+function xqAi(state, level, budget) {
   const lv = level || 2;
   const side = state.turn;
   const board = state.board.slice();
@@ -369,7 +372,7 @@ function xqAi(state, level) {
   }
 
   const maxDepth = lv >= 3 ? 4 : 3;
-  XQ_NODES.deadline = Date.now() + (lv >= 3 ? 1400 : 700);
+  XQ_NODES.deadline = Date.now() + (budget || (lv >= 3 ? 1400 : 700));
 
   /* 吃子价值高的先搜，能让剪枝早点生效 */
   const orderKey = (m) => (m.cap ? XQ_VALUE[m.cap[1]] : 0);

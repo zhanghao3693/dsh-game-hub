@@ -1,6 +1,6 @@
-/* dsh-game-hub · 自动生成，勿手改；改 src/ 后跑 node tools/build.mjs */
+/* @dpharness/dsh-game-hub · 自动生成，勿手改；改 src/ 后跑 node tools/build.mjs */
 window.__ModuleLoader__.load({
-  id: "dsh-game-hub",
+  id: "@dpharness/dsh-game-hub",
   factory: (require) => {
     const module = { exports: {} };
     const exports = module.exports;
@@ -795,8 +795,11 @@ function xqNegamax(board, side, depth, alpha, beta) {
  * AI 选着。
  * @param {object} state
  * @param {number} level 1=简单 2=普通 3=困难
+ * @param {number} [budget] 思考时间预算（毫秒）。不传则用各档默认值。
+ *   测试里传一个大预算，可让搜索跑满目标深度、不受机器负载影响；
+ *   否则同样的局面在慢机上会提前超时截断，断言随之抖动。
  */
-function xqAi(state, level) {
+function xqAi(state, level, budget) {
   const lv = level || 2;
   const side = state.turn;
   const board = state.board.slice();
@@ -819,7 +822,7 @@ function xqAi(state, level) {
   }
 
   const maxDepth = lv >= 3 ? 4 : 3;
-  XQ_NODES.deadline = Date.now() + (lv >= 3 ? 1400 : 700);
+  XQ_NODES.deadline = Date.now() + (budget || (lv >= 3 ? 1400 : 700));
 
   /* 吃子价值高的先搜，能让剪枝早点生效 */
   const orderKey = (m) => (m.cap ? XQ_VALUE[m.cap[1]] : 0);
@@ -4531,9 +4534,12 @@ function invStep(st, dt, input) {
         out.phase = "over";
         return out;
       }
-      /* 复活后短暂无敌感：清掉所有敌弹 */
-      out.enemyBullets = [];
-      continue;
+      /* 复活后短暂无敌感：清掉所有敌弹。
+       * 这里必须 length = 0 而不是重新赋值数组，并且要 break —— 外层是
+       * 倒序 for 循环，缓存的是索引 i，把数组换掉后下一轮读 out.enemyBullets[i]
+       * 就是 undefined，会抛 Cannot read properties of undefined。 */
+      out.enemyBullets.length = 0;
+      break;
     }
     if (b.y > INV_H) out.enemyBullets.splice(i, 1);
   }
