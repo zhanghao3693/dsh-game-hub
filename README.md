@@ -47,17 +47,20 @@ DSH 里原本每个小游戏都是独立插件，各自挂一个悬浮按钮，�
 
 ## 安装
 
-### 从 npm
+### 从 GitHub（当前可用）
+
+```bash
+dsh plugin install https://github.com/zhanghao3693/dsh-game-hub
+```
+
+### 从 npm（尚未发布到 registry）
 
 ```bash
 dsh plugin install dsh-game-hub
 ```
 
-### 从 GitHub
-
-```bash
-dsh plugin install https://github.com/zhanghao3693/dsh-game-hub
-```
+> 代码已就绪、tarball 已构建，但 `npm publish` 因当前 npm token 无发布权限（403）尚未完成。
+> 恢复发布权限后这条命令即可用。
 
 ### 从本地目录（改代码时用这个）
 
