@@ -856,6 +856,326 @@ ok("四款内置游戏已挂内核", ["snake", "tetris", "breakout", "2048"].eve
       && new Set(games.map((g) => g.id)).size === games.length);
 }
 
+/* ------------------------------------------------- 交互冒烟：点按钮后真的能玩 */
+{
+  /* 上一段只保证"组件能构建出树"，抓不到"遮罩永远盖着"这一类状态 bug：
+     扫雷/五子棋/象棋都曾把遮罩条件绑在"点击之后才会变真"的字段上
+     （st.started / moves.length===0 / history.length===0），
+     于是点按钮 → 状态没变成"已开始" → 遮罩立刻盖回来 → 游戏彻底点不动。
+     这里另建一个沙箱，塞进会真正跑 setState / useEffect 的假 React，
+     把整包重新加载一遍，再逐个点遮罩上的按钮。 */
+
+  const mkCanvas = () => ({
+    width: 0,
+    height: 0,
+    style: {},
+    __scale: 1,
+    parentElement: { clientWidth: 600, clientHeight: 500 },
+    getContext: () => new Proxy({}, { get: () => () => {}, set: () => true }),
+    getBoundingClientRect: () => ({ left: 0, top: 0, width: 600, height: 500 }),
+    addEventListener() {},
+    removeEventListener() {},
+  });
+
+  /* 一次挂载 = 一棵组件树；frames 记录当前递归路径，hooks 存在各自的 frame 上 */
+  let frames = [];
+  let tree = null;
+  let mountType = null;
+  /* 根组件的 frame 必须跨渲染复用，否则每次重渲染 hooks 全被清空，
+     setState 等于没生效（第一版就栽在这里，测出来全不动） */
+  let mountFrame = { hooks: [], i: 0, owner: null };
+  let dirty = false;
+  const effects = new Map();
+  let queued = [];
+
+  const H = (type, props, ...kids) => {
+    if (typeof type === "function") {
+      /* children 必须交回去：丢掉的话 GameChrome 里的 canvas / footer 全是 undefined，
+         画布点击事件根本挂不上，测出来是假绿。 */
+      const p = Object.assign({}, props || {});
+      if (kids.length) p.children = kids.length === 1 ? kids[0] : kids;
+      const f = { hooks: [], i: 0, owner: type };
+      frames.push(f);
+      try {
+        return type(p);
+      } finally {
+        frames.pop();
+      }
+    }
+    const p = Object.assign({}, props || {});
+    if (p.ref && typeof p.ref === "object" && type === "canvas") p.ref.current = mkCanvas();
+    return { type, props: p, kids: kids.flat(9) };
+  };
+
+  const shallowEq = (a, b) => {
+    if (!a || !b || a.length !== b.length) return false;
+    return a.every((v, i) => v === b[i]);
+  };
+
+  const HReact = {
+    createElement: H,
+    Fragment: "Fragment",
+    useState(init) {
+      const f = frames[frames.length - 1];
+      const i = f.i++;
+      if (!f.hooks[i]) f.hooks[i] = { v: typeof init === "function" ? init() : init };
+      const s = f.hooks[i];
+      return [s.v, (n) => { s.v = typeof n === "function" ? n(s.v) : n; dirty = true; }];
+    },
+    useRef(init) {
+      const f = frames[frames.length - 1];
+      const i = f.i++;
+      if (!f.hooks[i]) f.hooks[i] = { current: init };
+      return f.hooks[i];
+    },
+    useEffect(fn, deps) {
+      const f = frames[frames.length - 1];
+      const key = `${f.owner.name || "anon"}#${f.i++}`;
+      const prev = effects.get(key);
+      if (deps === undefined || !prev || !shallowEq(prev.deps, deps)) queued.push({ key, fn, deps });
+    },
+    useLayoutEffect() {},
+    useCallback(fn) {
+      frames[frames.length - 1].i += 1;
+      return fn;
+    },
+    useMemo(fn) {
+      frames[frames.length - 1].i += 1;
+      return fn();
+    },
+  };
+
+  const flushEffects = () => {
+    const batch = queued;
+    queued = [];
+    for (const e of batch) {
+      const old = effects.get(e.key);
+      if (old && typeof old.cleanup === "function") old.cleanup();
+      const entry = { deps: e.deps, cleanup: null };
+      effects.set(e.key, entry);
+      const c = e.fn();
+      if (typeof c === "function") entry.cleanup = c;
+    }
+  };
+
+  const render = () => {
+    dirty = false;
+    frames = [mountFrame];
+    mountFrame.i = 0;
+    const root = mountType({ onExit: () => {} });
+    frames = [];
+    tree = root;
+    flushEffects();
+    return tree;
+  };
+
+  /* 等待真 setTimeout（AI 回合）并把由此产生的重渲染收干净 */
+  const settle = async (ms) => {
+    if (ms) await new Promise((r) => setTimeout(r, ms));
+    for (let round = 0; round < 40; round += 1) {
+      if (!dirty && !queued.length) return tree;
+      render();
+    }
+    return tree;
+  };
+
+  const mountGame = (comp) => {
+    mountType = comp;
+    mountFrame = { hooks: [], i: 0, owner: comp };
+    effects.clear();
+    queued = [];
+    render();
+  };
+
+  const textOf = (n) => {
+    if (n === null || n === undefined || n === false) return "";
+    if (typeof n === "string" || typeof n === "number") return String(n);
+    if (Array.isArray(n)) return n.map(textOf).join("");
+    if (typeof n !== "object") return "";
+    return (n.kids || []).map(textOf).join("");
+  };
+  const walk = (n, fn) => {
+    if (n === null || n === undefined) return;
+    if (Array.isArray(n)) {
+      for (const x of n) walk(x, fn);
+      return;
+    }
+    if (typeof n !== "object" || !n.type) return;
+    fn(n);
+    for (const k of n.kids || []) walk(k, fn);
+  };
+  const byClass = (cls) => {
+    const out = [];
+    walk(tree, (n) => {
+      if (n.props && String(n.props.className || "") === cls) out.push(n);
+    });
+    return out;
+  };
+  const overlayOf = () => {
+    const out = [];
+    walk(tree, (n) => {
+      if (n.props && String(n.props.className || "").includes("gc-overlay")) out.push(n);
+    });
+    return out[0] || null;
+  };
+  const hudText = () => {
+    const el = byClass("gc-game-hud")[0];
+    return el ? textOf(el).replace(/\s+/g, " ") : "";
+  };
+  const clickLabel = async (label) => {
+    let hit = null;
+    walk(tree, (n) => {
+      if (!hit && n.type === "button" && textOf(n).trim() === label) hit = n;
+    });
+    if (!hit) throw new Error(`找不到按钮「${label}」`);
+    hit.props.onClick({ preventDefault() {}, stopPropagation() {} });
+    return settle(0);
+  };
+  const pointerDown = async (x, y) => {
+    let cv = null;
+    walk(tree, (n) => {
+      if (!cv && n.type === "canvas") cv = n;
+    });
+    if (!cv) throw new Error("画布没挂上");
+    if (!cv.props.ref.current) throw new Error("画布 ref 为空");
+    cv.props.onPointerDown({
+      button: 0,
+      clientX: x,
+      clientY: y,
+      preventDefault() {},
+      stopPropagation() {},
+    });
+    return settle(0);
+  };
+
+  /* 用交互版 React 重新加载整包，拿到一套"真的会响应点击"的组件 */
+  const rafQueue = [];
+  const iDoc = {
+    activeElement: null,
+    body: { hasAttribute: () => true },
+    documentElement: { style: {} },
+    head: { appendChild() {} },
+    createElement: (t) => (t === "canvas" ? mkCanvas() : { style: {}, appendChild() {}, setAttribute() {} }),
+    addEventListener() {},
+    removeEventListener() {},
+    querySelector: () => null,
+    querySelectorAll: () => [],
+  };
+  const iSandbox = {
+    console,
+    Math,
+    Date,
+    JSON,
+    Object,
+    Array,
+    String,
+    Number,
+    Boolean,
+    Set,
+    Map,
+    Error,
+    setTimeout,
+    clearTimeout,
+    setInterval: () => 0,
+    clearInterval: () => {},
+    /* rAF 只登记不回调：否则 useLoop 会自己无限转下去 */
+    requestAnimationFrame: (fn) => (rafQueue.push(fn), rafQueue.length),
+    cancelAnimationFrame: () => {},
+    ResizeObserver: class { observe() {} unobserve() {} disconnect() {} },
+    localStorage: {
+      getItem: (k) => (storage.has(k) ? storage.get(k) : null),
+      setItem: (k, v) => storage.set(k, String(v)),
+      removeItem: (k) => storage.delete(k),
+    },
+    document: iDoc,
+    navigator: { userAgent: "node" },
+  };
+  iSandbox.window = iSandbox;
+  iSandbox.window.devicePixelRatio = 2;
+  iSandbox.window.addEventListener = () => {};
+  iSandbox.window.removeEventListener = () => {};
+  const iCaptured = {};
+  iSandbox.window.__ModuleLoader__ = {
+    load: ({ id, factory }) => {
+      iCaptured.id = id;
+      iCaptured.exports = factory((name) => {
+        if (name === "react") return HReact;
+        throw new Error(`unexpected require: ${name}`);
+      });
+    },
+  };
+  vm.createContext(iSandbox);
+  vm.runInContext(CODE, iSandbox, { filename: "dist/client.js(interactive)" });
+
+  const iGames = iCaptured.exports.__internals.registry.allGames();
+  const iComp = (id) => {
+    const g = iGames.find((x) => x.id === id);
+    if (!g) throw new Error(`没有游戏 ${id}`);
+    return g.component;
+  };
+
+  /* ① 每款带遮罩的游戏：遮罩上的每个按钮点下去，遮罩都必须消失 */
+  for (const id of ["minesweeper", "gomoku", "xiangqi", "tetris"]) {
+    mountGame(iComp(id));
+    const overlay = overlayOf();
+    ok(`${id} 开局有遮罩`, !!overlay);
+    const labels = [];
+    if (overlay) {
+      walk(overlay, (n) => {
+        if (n.type === "button") labels.push(textOf(n).trim());
+      });
+    }
+    const stuck = [];
+    for (const label of labels) {
+      mountGame(iComp(id));
+      try {
+        await clickLabel(label);
+        await settle(200);
+        if (overlayOf()) stuck.push(label);
+      } catch (e) {
+        stuck.push(`${label}(${e.message})`);
+      }
+    }
+    ok(`${id} 每个遮罩按钮点下去都能开局`, labels.length > 0 && stuck.length === 0, stuck.join(" | "));
+  }
+
+  /* ② 遮罩消失只是第一步，还要证明真的能操作 */
+
+  mountGame(iComp("minesweeper"));
+  await clickLabel("初级 9×9");
+  await pointerDown(200, 200);
+  ok("扫雷点格子能翻开", !/翻开\s*0\//.test(hudText()), hudText());
+
+  mountGame(iComp("gomoku"));
+  await clickLabel("我执黑（先手）");
+  await pointerDown(300, 300);
+  ok("五子棋落子后手数=1", /手数\s*1/.test(hudText()), hudText());
+
+  mountGame(iComp("gomoku"));
+  await clickLabel("我执白（后手）");
+  await settle(250);
+  ok("五子棋执白时 AI 会先落子", /手数\s*1/.test(hudText()), hudText());
+
+  mountGame(iComp("xiangqi"));
+  await clickLabel("我执红（先手）");
+  /* 红车在 (0,9)，往前一格 (0,8) */
+  await pointerDown(34 + 0 * 56, 34 + 9 * 56);
+  await pointerDown(34 + 0 * 56, 34 + 8 * 56);
+  ok("象棋红方走子后 history=1", /走子\s*1/.test(hudText()), hudText());
+
+  mountGame(iComp("xiangqi"));
+  await clickLabel("我执黑（后手）");
+  await settle(300);
+  ok("象棋执黑时 AI 会先走", /走子\s*1/.test(hudText()), hudText());
+
+  mountGame(iComp("tetris"));
+  rafQueue.length = 0;
+  await clickLabel("换一局");
+  await settle(0);
+  ok("俄罗斯方块换一局后遮罩消失", !overlayOf());
+  ok("俄罗斯方块换一局后循环已启动", rafQueue.length > 0, String(rafQueue.length));
+}
+
 /* ------------------------------------------------------------ 汇总 */
 console.log("");
 if (fails.length) {

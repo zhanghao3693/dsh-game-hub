@@ -447,6 +447,9 @@ function XiangqiGame({ onExit }) {
   const [selected, setSelected] = useState(-1);
   const [thinking, setThinking] = useState(false);
   const [legal, setLegal] = useState([]);
+  /* armed = 已选边开局。遮罩条件不能用 history.length === 0：
+     点按钮后 history 仍是 0，遮罩立刻又盖回来。 */
+  const [armed, setArmed] = useState(false);
   const cvRef = useFitCanvas(XQ_CANVAS_W, XQ_CANVAS_H);
 
   const reset = useCallback((side, lv) => {
@@ -458,6 +461,7 @@ function XiangqiGame({ onExit }) {
     setSelected(-1);
     setLegal([]);
     setThinking(false);
+    setArmed(true);
   }, [humanSide, level]);
 
   /* AI 回合 */
@@ -674,7 +678,7 @@ function XiangqiGame({ onExit }) {
       ],
       onRestart: () => reset(),
       overlay:
-        st.over || st.history.length === 0
+        st.over || !armed
           ? h(GameOverlay, {
               title: st.over ? (st.winner === humanSide ? "你赢了" : "你被将死了") : "中国象棋",
               lines: st.over

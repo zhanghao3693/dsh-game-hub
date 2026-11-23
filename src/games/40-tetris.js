@@ -150,7 +150,10 @@ function TetrisGame({ onExit }) {
 
   const reset = useCallback(() => {
     setSt(tetNewState());
-    setRunning(false);
+    deadRef.current = false;
+    /* 换一局要直接进游戏。以前这里 setRunning(false)，而遮罩条件正是 !running，
+       于是"换一局"点完遮罩原样盖回来，看起来像按钮失灵。 */
+    setRunning(true);
   }, []);
 
   /** 左右移动 / 旋转 / 软降 都走这一个函数，逻辑集中好验证 */

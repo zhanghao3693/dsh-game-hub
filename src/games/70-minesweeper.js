@@ -180,6 +180,10 @@ function MinesweeperGame({ onExit }) {
   const [st, setSt] = useState(() => msNewState(0));
   const [hi, setHi] = useState(() => bestScore(`minesweeper-${0}`));
   const [mouse, setMouse] = useState({ x: -1, y: -1 });
+  /* armed = 难度已选定、可以落子。注意不能用 st.started 当遮罩条件：
+     st.started 要等第一下点击才由 msPlace 置真，而遮罩本身挡住了那一下点击，
+     于是"点难度 → 遮罩还在"永远出不去。 */
+  const [armed, setArmed] = useState(false);
   const cvRef = useFitCanvas(st.w * 30, st.h * 30);
   const wonRef = useRef(false);
 
@@ -189,6 +193,7 @@ function MinesweeperGame({ onExit }) {
     setSt(msNewState(idx));
     setHi(bestScore(`minesweeper-${idx}`));
     wonRef.current = false;
+    setArmed(true);
   }, [levelIdx]);
 
   const cellFromEvent = useCallback(
@@ -348,7 +353,7 @@ function MinesweeperGame({ onExit }) {
               ).filter(Boolean),
             ],
           })
-        : !st.started
+        : !armed
           ? h(GameOverlay, {
               title: "扫雷",
               lines: ["左键翻开，右键插旗。", "第一下点开的格子周围保证没雷。"],

@@ -331,6 +331,9 @@ function GomokuGame({ onExit }) {
   const [level, setLevel] = useState(2);
   const [humanColor, setHumanColor] = useState(GOMOKU_BLACK);
   const [thinking, setThinking] = useState(false);
+  /* armed = 已经点过"开始"，可以落子。遮罩条件不能用 moves.length === 0：
+     点按钮后 moves 仍是 0，遮罩立刻又盖回来，永远开不了局。 */
+  const [armed, setArmed] = useState(false);
   const cvRef = useFitCanvas(600, 600);
   const busyRef = useRef(false);
 
@@ -342,6 +345,7 @@ function GomokuGame({ onExit }) {
     setSt(gomokuNewState(false));
     setThinking(false);
     busyRef.current = false;
+    setArmed(true);
   }, [humanColor, level]);
 
   /* AI 回合：放到下一个 tick 里算，避免阻塞点击响应 */
@@ -494,7 +498,7 @@ function GomokuGame({ onExit }) {
       ],
       onRestart: () => reset(),
       overlay:
-        st.over || st.moves.length === 0
+        st.over || !armed
           ? h(GameOverlay, {
               title: st.over ? (st.winner === 3 ? "和棋" : humanWon ? "你赢了" : "AI 赢了") : "五子棋",
               lines: st.over

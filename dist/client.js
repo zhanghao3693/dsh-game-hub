@@ -897,6 +897,9 @@ function XiangqiGame({ onExit }) {
   const [selected, setSelected] = useState(-1);
   const [thinking, setThinking] = useState(false);
   const [legal, setLegal] = useState([]);
+  /* armed = 已选边开局。遮罩条件不能用 history.length === 0：
+     点按钮后 history 仍是 0，遮罩立刻又盖回来。 */
+  const [armed, setArmed] = useState(false);
   const cvRef = useFitCanvas(XQ_CANVAS_W, XQ_CANVAS_H);
 
   const reset = useCallback((side, lv) => {
@@ -908,6 +911,7 @@ function XiangqiGame({ onExit }) {
     setSelected(-1);
     setLegal([]);
     setThinking(false);
+    setArmed(true);
   }, [humanSide, level]);
 
   /* AI 回合 */
@@ -1124,7 +1128,7 @@ function XiangqiGame({ onExit }) {
       ],
       onRestart: () => reset(),
       overlay:
-        st.over || st.history.length === 0
+        st.over || !armed
           ? h(GameOverlay, {
               title: st.over ? (st.winner === humanSide ? "你赢了" : "你被将死了") : "中国象棋",
               lines: st.over
@@ -2853,7 +2857,10 @@ function TetrisGame({ onExit }) {
 
   const reset = useCallback(() => {
     setSt(tetNewState());
-    setRunning(false);
+    deadRef.current = false;
+    /* 换一局要直接进游戏。以前这里 setRunning(false)，而遮罩条件正是 !running，
+       于是"换一局"点完遮罩原样盖回来，看起来像按钮失灵。 */
+    setRunning(true);
   }, []);
 
   /** 左右移动 / 旋转 / 软降 都走这一个函数，逻辑集中好验证 */
@@ -4123,6 +4130,10 @@ function MinesweeperGame({ onExit }) {
   const [st, setSt] = useState(() => msNewState(0));
   const [hi, setHi] = useState(() => bestScore(`minesweeper-${0}`));
   const [mouse, setMouse] = useState({ x: -1, y: -1 });
+  /* armed = 难度已选定、可以落子。注意不能用 st.started 当遮罩条件：
+     st.started 要等第一下点击才由 msPlace 置真，而遮罩本身挡住了那一下点击，
+     于是"点难度 → 遮罩还在"永远出不去。 */
+  const [armed, setArmed] = useState(false);
   const cvRef = useFitCanvas(st.w * 30, st.h * 30);
   const wonRef = useRef(false);
 
@@ -4132,6 +4143,7 @@ function MinesweeperGame({ onExit }) {
     setSt(msNewState(idx));
     setHi(bestScore(`minesweeper-${idx}`));
     wonRef.current = false;
+    setArmed(true);
   }, [levelIdx]);
 
   const cellFromEvent = useCallback(
@@ -4291,7 +4303,7 @@ function MinesweeperGame({ onExit }) {
               ).filter(Boolean),
             ],
           })
-        : !st.started
+        : !armed
           ? h(GameOverlay, {
               title: "扫雷",
               lines: ["左键翻开，右键插旗。", "第一下点开的格子周围保证没雷。"],
@@ -5139,6 +5151,9 @@ function GomokuGame({ onExit }) {
   const [level, setLevel] = useState(2);
   const [humanColor, setHumanColor] = useState(GOMOKU_BLACK);
   const [thinking, setThinking] = useState(false);
+  /* armed = 已经点过"开始"，可以落子。遮罩条件不能用 moves.length === 0：
+     点按钮后 moves 仍是 0，遮罩立刻又盖回来，永远开不了局。 */
+  const [armed, setArmed] = useState(false);
   const cvRef = useFitCanvas(600, 600);
   const busyRef = useRef(false);
 
@@ -5150,6 +5165,7 @@ function GomokuGame({ onExit }) {
     setSt(gomokuNewState(false));
     setThinking(false);
     busyRef.current = false;
+    setArmed(true);
   }, [humanColor, level]);
 
   /* AI 回合：放到下一个 tick 里算，避免阻塞点击响应 */
@@ -5302,7 +5318,7 @@ function GomokuGame({ onExit }) {
       ],
       onRestart: () => reset(),
       overlay:
-        st.over || st.moves.length === 0
+        st.over || !armed
           ? h(GameOverlay, {
               title: st.over ? (st.winner === 3 ? "和棋" : humanWon ? "你赢了" : "AI 赢了") : "五子棋",
               lines: st.over
