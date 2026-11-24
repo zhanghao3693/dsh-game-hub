@@ -63,7 +63,18 @@ function xqNew() {
     b[xqIdx(x, 3)] = "bP";
     b[xqIdx(x, 6)] = "rP";
   }
-  return { board: b, turn: XQ_RED, over: false, winner: 0, history: [] };
+  return {
+    board: b,
+    turn: XQ_RED,
+    over: false,
+    winner: 0,
+    history: [],
+    /* 局面签名表 + 无吃子手数：用来判「三次重复局面」和「60 回合自然限着」。
+       没有这两条，AI 对 AI 可以无限循环（实测 L2 自对弈第 63 手回到第 59 手
+       的局面，内核完全没察觉）。 */
+    posKeys: [],
+    noCapture: 0,
+  };
 }
 
 function xqInPalace(x, y, side) {
@@ -247,11 +258,17 @@ function xqLegalMoves(board, side, pre) {
   return out;
 }
 
+/** 局面签名：棋子摆法 + 走子方。同一签名出现 3 次判和 */
+function xqPosKey(board, turn) {
+  return board.map((p) => p || "-").join("") + "|" + turn;
+}
+
 /** 纯函数落子，返回新 state */
 function xqApply(state, mv) {
   const board = state.board.slice();
   const moving = board[mv.from];
   if (!moving) return state;
+  const captured = board[mv.to];
   board[mv.to] = moving;
   board[mv.from] = null;
   const history = state.history.concat([
@@ -263,6 +280,31 @@ function xqApply(state, mv) {
   if (!reply.length) {
     next.over = true;
     next.winner = state.turn;
+    return next;
+  }
+
+  /* 和棋两条规则（此前完全没有，AI 对 AI 会无限循环）：
+     · 同一局面（含走子方）第三次出现 → 判和，winner 记 3
+     · 连续 60 回合（120 手）无吃子 → 自然限着判和 */
+  const key = xqPosKey(board, next.turn);
+  const prevKeys = state.posKeys || [];
+  const seen = prevKeys.slice();
+  if (!seen.length) seen.push(xqPosKey(state.board, state.turn));
+  seen.push(key);
+  next.posKeys = seen;
+  const repeat = seen.filter((k) => k === key).length;
+  next.noCapture = captured ? 0 : (state.noCapture || 0) + 1;
+  if (repeat >= 3) {
+    next.over = true;
+    next.winner = 3; /* 3 = 和棋 */
+    next.drawBy = "repeat";
+    return next;
+  }
+  if (next.noCapture >= 120) {
+    next.over = true;
+    next.winner = 3;
+    next.drawBy = "moves";
+    return next;
   }
   return next;
 }
@@ -652,7 +694,13 @@ function XiangqiGame({ onExit }) {
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
       ctx.fillText(
-        st.winner === humanSide ? "你赢了" : "你被将死了",
+        st.winner === 3
+          ? st.drawBy === "repeat"
+            ? "三次重复局面，和棋"
+            : "60 回合无吃子，和棋"
+          : st.winner === humanSide
+            ? "你赢了"
+            : "你被将死了",
         XQ_CANVAS_W / 2,
         XQ_CANVAS_H / 2,
       );
@@ -680,9 +728,21 @@ function XiangqiGame({ onExit }) {
       overlay:
         st.over || !armed
           ? h(GameOverlay, {
-              title: st.over ? (st.winner === humanSide ? "你赢了" : "你被将死了") : "中国象棋",
+              title: !st.over
+                ? "中国象棋"
+                : st.winner === 3
+                  ? st.drawBy === "repeat"
+                    ? "和棋（三次重复局面）"
+                    : "和棋（60 回合无吃子）"
+                  : st.winner === humanSide
+                    ? "你赢了"
+                    : "你被将死了",
               lines: st.over
-                ? [`共走了 ${st.history.length} 步。`]
+                ? [
+                    st.winner === 3
+                      ? "这局没分出胜负。换一局再来。"
+                      : `共走了 ${st.history.length} 步。`,
+                  ]
                 : [
                     "点自己的子选中，再点绿点落子。",
                     "红先。困难档会算到 4 层。",
@@ -716,6 +776,8 @@ attachKernel("xiangqi", {
   ai: xqAi,
   eval: xqEval,
   char: XQ_CHAR,
+  DRAW: 3,
+  posKey: xqPosKey,
 });
 
 defineGame({

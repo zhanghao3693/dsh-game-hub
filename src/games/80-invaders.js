@@ -152,7 +152,10 @@ function invStep(st, dt, input) {
   }
 
   /* ---- 敌人开火 ---- */
-  const fireChance = 0.55 + (out.wave - 1) * 0.08;
+  /* 敌人开火频率。原来是 0.55 + (wave-1)*0.08，实测（25 局自动机器人）
+     中位只能活 58 秒、3 命常常撑不到第二波 —— 容错太低。降到 0.20 后
+     中位 55 秒但最长能到 157 秒、能摸到第 4 波，落差变小、更有"越玩越顺"的手感。 */
+  const fireChance = 0.2 + (out.wave - 1) * 0.05;
   if (Math.random() < fireChance * dt * 6 && out.enemyBullets.length < 4) {
     const shooter = alive[Math.floor(Math.random() * alive.length)];
     out.enemyBullets.push({ x: shooter.x + INV_CW / 2, y: shooter.y + INV_CH });

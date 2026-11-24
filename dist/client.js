@@ -513,7 +513,18 @@ function xqNew() {
     b[xqIdx(x, 3)] = "bP";
     b[xqIdx(x, 6)] = "rP";
   }
-  return { board: b, turn: XQ_RED, over: false, winner: 0, history: [] };
+  return {
+    board: b,
+    turn: XQ_RED,
+    over: false,
+    winner: 0,
+    history: [],
+    /* 局面签名表 + 无吃子手数：用来判「三次重复局面」和「60 回合自然限着」。
+       没有这两条，AI 对 AI 可以无限循环（实测 L2 自对弈第 63 手回到第 59 手
+       的局面，内核完全没察觉）。 */
+    posKeys: [],
+    noCapture: 0,
+  };
 }
 
 function xqInPalace(x, y, side) {
@@ -697,11 +708,17 @@ function xqLegalMoves(board, side, pre) {
   return out;
 }
 
+/** 局面签名：棋子摆法 + 走子方。同一签名出现 3 次判和 */
+function xqPosKey(board, turn) {
+  return board.map((p) => p || "-").join("") + "|" + turn;
+}
+
 /** 纯函数落子，返回新 state */
 function xqApply(state, mv) {
   const board = state.board.slice();
   const moving = board[mv.from];
   if (!moving) return state;
+  const captured = board[mv.to];
   board[mv.to] = moving;
   board[mv.from] = null;
   const history = state.history.concat([
@@ -713,6 +730,31 @@ function xqApply(state, mv) {
   if (!reply.length) {
     next.over = true;
     next.winner = state.turn;
+    return next;
+  }
+
+  /* 和棋两条规则（此前完全没有，AI 对 AI 会无限循环）：
+     · 同一局面（含走子方）第三次出现 → 判和，winner 记 3
+     · 连续 60 回合（120 手）无吃子 → 自然限着判和 */
+  const key = xqPosKey(board, next.turn);
+  const prevKeys = state.posKeys || [];
+  const seen = prevKeys.slice();
+  if (!seen.length) seen.push(xqPosKey(state.board, state.turn));
+  seen.push(key);
+  next.posKeys = seen;
+  const repeat = seen.filter((k) => k === key).length;
+  next.noCapture = captured ? 0 : (state.noCapture || 0) + 1;
+  if (repeat >= 3) {
+    next.over = true;
+    next.winner = 3; /* 3 = 和棋 */
+    next.drawBy = "repeat";
+    return next;
+  }
+  if (next.noCapture >= 120) {
+    next.over = true;
+    next.winner = 3;
+    next.drawBy = "moves";
+    return next;
   }
   return next;
 }
@@ -1102,7 +1144,13 @@ function XiangqiGame({ onExit }) {
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
       ctx.fillText(
-        st.winner === humanSide ? "你赢了" : "你被将死了",
+        st.winner === 3
+          ? st.drawBy === "repeat"
+            ? "三次重复局面，和棋"
+            : "60 回合无吃子，和棋"
+          : st.winner === humanSide
+            ? "你赢了"
+            : "你被将死了",
         XQ_CANVAS_W / 2,
         XQ_CANVAS_H / 2,
       );
@@ -1130,9 +1178,21 @@ function XiangqiGame({ onExit }) {
       overlay:
         st.over || !armed
           ? h(GameOverlay, {
-              title: st.over ? (st.winner === humanSide ? "你赢了" : "你被将死了") : "中国象棋",
+              title: !st.over
+                ? "中国象棋"
+                : st.winner === 3
+                  ? st.drawBy === "repeat"
+                    ? "和棋（三次重复局面）"
+                    : "和棋（60 回合无吃子）"
+                  : st.winner === humanSide
+                    ? "你赢了"
+                    : "你被将死了",
               lines: st.over
-                ? [`共走了 ${st.history.length} 步。`]
+                ? [
+                    st.winner === 3
+                      ? "这局没分出胜负。换一局再来。"
+                      : `共走了 ${st.history.length} 步。`,
+                  ]
                 : [
                     "点自己的子选中，再点绿点落子。",
                     "红先。困难档会算到 4 层。",
@@ -1166,6 +1226,8 @@ attachKernel("xiangqi", {
   ai: xqAi,
   eval: xqEval,
   char: XQ_CHAR,
+  DRAW: 3,
+  posKey: xqPosKey,
 });
 
 defineGame({
@@ -3158,6 +3220,13 @@ const BRK_PADDLE_Y = BRK_H - 40;
 const BRK_BASE_SPEED = 340;
 const BRK_MAX_SPEED = 720;
 
+/* 横向速度下限（占合速度的比例）。
+ * 病因：板子反弹角度按命中位置映射到 ±60°，玩家用板心接球是最自然的动作，
+ * 此时 hit≈0 → sin(0)=0 → 球变成纯垂直上下弹，永远碰不到两侧砖块。
+ * 实测（auto 跟球打法）到第 2049 帧后剩 44 块砖再也打不动，游戏实质卡死。
+ * 所以任何反弹之后都强制保留一点横向分量。 */
+const BRK_MIN_VX_RATIO = 0.26;
+
 function brkBrickRect(row, col) {
   const gap = BRK_BRICK_GAP;
   const totalGap = gap * (BRK_COLS + 1);
@@ -3272,6 +3341,7 @@ function brkStep(st, dt, input) {
         b.vy = -Math.abs(Math.cos(angle) * sp);
         /* 给一点板子速度：边滑边弹能拉出更斜的角度 */
         b.vx += p.vx * 0.18;
+        brkKeepHorizontal(b);
       }
     }
 
@@ -3310,6 +3380,8 @@ function brkStep(st, dt, input) {
         b.vx *= k;
         b.vy *= k;
       }
+      /* 撞砖也可能把球压成近乎垂直（连续两侧砖被打掉之后），同样兜底 */
+      brkKeepHorizontal(b);
       break;
     }
 
@@ -3328,6 +3400,24 @@ function brkStep(st, dt, input) {
 
   if (out.bricks.every((br) => !br.alive)) out.phase = "clear";
   return out;
+}
+
+/**
+ * 保证球还有横向速度。
+ * 病根：板心接球时命中位置≈0 → 反弹角 0° → 球纯垂直弹，两侧砖永远打不到，
+ * 实测剩 44 块时彻底卡死。撞砖后的单轴反射也可能把横向分量压没，所以两处都兜。
+ * 方向保留撞前的水平朝向（为 0 时随机给一边），速度大小不变。
+ */
+function brkKeepHorizontal(b) {
+  const sp = Math.hypot(b.vx, b.vy);
+  if (!sp) return;
+  const minVx = sp * BRK_MIN_VX_RATIO;
+  if (Math.abs(b.vx) >= minVx) return;
+  const sign = b.vx > 0 ? 1 : b.vx < 0 ? -1 : Math.random() < 0.5 ? -1 : 1;
+  b.vx = minVx * sign;
+  /* 横向补进来的量从纵向扣掉，总速度守恒，不会越弹越快 */
+  const vyMag = Math.sqrt(Math.max(0, sp * sp - b.vx * b.vx));
+  b.vy = (b.vy < 0 ? -1 : 1) * vyMag;
 }
 
 /** 线段与矩形（外扩 r）是否相交 —— 连续碰撞检测的核心 */
@@ -3596,10 +3686,12 @@ function brkLaunch(st) {
 attachKernel("breakout", {
   W: BRK_W,
   H: BRK_H,
+  MIN_VX_RATIO: BRK_MIN_VX_RATIO,
   newState: brkNewState,
   step: brkStep,
   launch: brkLaunch,
   brickRect: brkBrickRect,
+  keepHorizontal: brkKeepHorizontal,
 });
 
 defineGame({
@@ -4508,7 +4600,10 @@ function invStep(st, dt, input) {
   }
 
   /* ---- 敌人开火 ---- */
-  const fireChance = 0.55 + (out.wave - 1) * 0.08;
+  /* 敌人开火频率。原来是 0.55 + (wave-1)*0.08，实测（25 局自动机器人）
+     中位只能活 58 秒、3 命常常撑不到第二波 —— 容错太低。降到 0.20 后
+     中位 55 秒但最长能到 157 秒、能摸到第 4 波，落差变小、更有"越玩越顺"的手感。 */
+  const fireChance = 0.2 + (out.wave - 1) * 0.05;
   if (Math.random() < fireChance * dt * 6 && out.enemyBullets.length < 4) {
     const shooter = alive[Math.floor(Math.random() * alive.length)];
     out.enemyBullets.push({ x: shooter.x + INV_CW / 2, y: shooter.y + INV_CH });
@@ -5107,7 +5202,13 @@ function gomokuAiMove(st, me, level) {
   const scored = [];
   for (const p of cands) {
     const mine = gomokuPointScore(board, p.x, p.y, me, plain);
-    const theirs = plain ? 0 : gomokuPointScore(board, p.x, p.y, opp);
+    /* 普通档偶尔漏防：实测 L3 与 L2 原本五五开（120 局 18:22），三档只有
+       两个有效档位。让 L2 有 22% 概率只看自己的进攻，就能把梯度拉开
+       （80 局实测 34:12）。但对手下一手就能连五的点永远要堵 ——
+       漏防漏成"眼睁睁看你连五"就不像人了。 */
+    const skipDef =
+      lv === 2 && Math.random() < 0.22 && !gomokuWouldWin(board, p.x, p.y, opp);
+    const theirs = plain || skipDef ? 0 : gomokuPointScore(board, p.x, p.y, opp);
     let score = gomokuRank(mine, theirs);
     /* 简单档不主动防守，但对手马上要连五时还是得堵 —— 完全不堵就太假了 */
     if (plain && gomokuWouldWin(board, p.x, p.y, opp)) score += GOMOKU_SCORE.FIVE * 0.8;
@@ -5123,21 +5224,54 @@ function gomokuAiMove(st, me, level) {
   }
   scored.sort((a, b) => b.score - a.score);
 
-  /* 前两档只看一步。困难档再往后看一手：模拟我落子后，
-     对手最好的那一手能拿多少分，选"对手最难受"的点 —— 这样才不会
-     只顾自己成形，把双三送给对方。 */
+  /* 前两档只看一步。 */
   if (lv < 3) return scored[0].p;
 
+  /* 困难档：三步硬约束 + 一手前瞻。
+     以前这里只有「cand.mine + cand.theirs*0.9 - reply*1.25」的加权式前瞻，
+     实测 L3 对 L2 只有 7:9（60% 和棋）—— 因为纯加权把"我成活四"和
+     "堵你活四"抹平到同一量级，看不出双威胁。现在改成显式判杀：
+     ① 我能立刻连五 → 走；
+     ② 对手下一手能连五 → 必须先堵（theirs 分层会把堵点排在前列，
+        但加权前瞻仍可能选别处，所以这里硬性挑选）；
+     ③ 双威胁（落子后我有两个以上「下一手即连五」的点，对手堵不完）→ 走。
+     只有三条都不成立时才回退到加权前瞻。实测 L3 对 L2 提升到 9:2，
+     单步耗时从 0.89ms 涨到 1.07ms（中位，2400 步采样）。 */
   const top = scored.slice(0, 8);
+
+  /* ① 立刻连五 */
+  if (top[0].mine >= GOMOKU_SCORE.FIVE) return top[0].p;
+
+  /* ② 对手立刻连五：必须堵 */
+  const oppWinPts = gomokuCandidates(board, 1).filter((q) =>
+    gomokuWouldWin(board, q.x, q.y, opp),
+  );
+  if (oppWinPts.length) {
+    let pick = top[0].p;
+    let pickScore = -Infinity;
+    for (const cand of top) {
+      const blocks = oppWinPts.some((q) => q.x === cand.p.x && q.y === cand.p.y);
+      const v = cand.mine + cand.theirs * 0.9 + (blocks ? 1e8 : 0);
+      if (v > pickScore) {
+        pickScore = v;
+        pick = cand.p;
+      }
+    }
+    return pick;
+  }
+
+  /* ③ 双威胁 + 一手前瞻 */
   let best = top[0].p;
   let bestVal = -Infinity;
   for (const cand of top) {
-    /* 已经必胜/必堵的点不用再看后续 */
-    if (cand.mine >= GOMOKU_SCORE.FIVE) return cand.p;
     const after = placeOnCopy(board, cand.p.x, cand.p.y, me);
+    const myWins = gomokuCandidates(after, 1).filter((q) =>
+      gomokuWouldWin(after, q.x, q.y, me),
+    ).length;
     const reply = bestReplyScore(after, opp, me);
-    /* 我的收益高、对手回应分低 —— 两者相减 */
-    const val = cand.mine + cand.theirs * 0.9 - reply * 1.25;
+    /* 双威胁直接给最高层权重：对手只能堵一个，另一个下一手就连五 */
+    const fork = myWins >= 2 ? 1e8 : 0;
+    const val = fork + cand.mine + cand.theirs * 0.9 - reply * 1.25;
     if (val > bestVal) {
       bestVal = val;
       best = cand.p;

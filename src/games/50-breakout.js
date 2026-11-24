@@ -33,6 +33,13 @@ const BRK_PADDLE_Y = BRK_H - 40;
 const BRK_BASE_SPEED = 340;
 const BRK_MAX_SPEED = 720;
 
+/* 横向速度下限（占合速度的比例）。
+ * 病因：板子反弹角度按命中位置映射到 ±60°，玩家用板心接球是最自然的动作，
+ * 此时 hit≈0 → sin(0)=0 → 球变成纯垂直上下弹，永远碰不到两侧砖块。
+ * 实测（auto 跟球打法）到第 2049 帧后剩 44 块砖再也打不动，游戏实质卡死。
+ * 所以任何反弹之后都强制保留一点横向分量。 */
+const BRK_MIN_VX_RATIO = 0.26;
+
 function brkBrickRect(row, col) {
   const gap = BRK_BRICK_GAP;
   const totalGap = gap * (BRK_COLS + 1);
@@ -147,6 +154,7 @@ function brkStep(st, dt, input) {
         b.vy = -Math.abs(Math.cos(angle) * sp);
         /* 给一点板子速度：边滑边弹能拉出更斜的角度 */
         b.vx += p.vx * 0.18;
+        brkKeepHorizontal(b);
       }
     }
 
@@ -185,6 +193,8 @@ function brkStep(st, dt, input) {
         b.vx *= k;
         b.vy *= k;
       }
+      /* 撞砖也可能把球压成近乎垂直（连续两侧砖被打掉之后），同样兜底 */
+      brkKeepHorizontal(b);
       break;
     }
 
@@ -203,6 +213,24 @@ function brkStep(st, dt, input) {
 
   if (out.bricks.every((br) => !br.alive)) out.phase = "clear";
   return out;
+}
+
+/**
+ * 保证球还有横向速度。
+ * 病根：板心接球时命中位置≈0 → 反弹角 0° → 球纯垂直弹，两侧砖永远打不到，
+ * 实测剩 44 块时彻底卡死。撞砖后的单轴反射也可能把横向分量压没，所以两处都兜。
+ * 方向保留撞前的水平朝向（为 0 时随机给一边），速度大小不变。
+ */
+function brkKeepHorizontal(b) {
+  const sp = Math.hypot(b.vx, b.vy);
+  if (!sp) return;
+  const minVx = sp * BRK_MIN_VX_RATIO;
+  if (Math.abs(b.vx) >= minVx) return;
+  const sign = b.vx > 0 ? 1 : b.vx < 0 ? -1 : Math.random() < 0.5 ? -1 : 1;
+  b.vx = minVx * sign;
+  /* 横向补进来的量从纵向扣掉，总速度守恒，不会越弹越快 */
+  const vyMag = Math.sqrt(Math.max(0, sp * sp - b.vx * b.vx));
+  b.vy = (b.vy < 0 ? -1 : 1) * vyMag;
 }
 
 /** 线段与矩形（外扩 r）是否相交 —— 连续碰撞检测的核心 */
@@ -471,10 +499,12 @@ function brkLaunch(st) {
 attachKernel("breakout", {
   W: BRK_W,
   H: BRK_H,
+  MIN_VX_RATIO: BRK_MIN_VX_RATIO,
   newState: brkNewState,
   step: brkStep,
   launch: brkLaunch,
   brickRect: brkBrickRect,
+  keepHorizontal: brkKeepHorizontal,
 });
 
 defineGame({

@@ -284,6 +284,27 @@ ok("四款内置游戏已挂内核", ["snake", "tetris", "breakout", "2048"].eve
   for (let i = 0; i < 400; i += 1) b2 = bk.step(b2, 1 / 60, { left: false, right: true, targetX: null });
   ok("板子不会滑出右墙", b2.paddle.x + b2.paddle.w <= bk.W + 0.01, String(b2.paddle.x));
 
+  /* 板心接球也必须留出横向分量 —— 否则球纯垂直上下弹，两边的砖永远打不到。
+     这是实测出来的卡死：120000 帧里既没通关也没死，球 vx=0、剩 44 块砖。
+     新手最自然的动作就是把板心对准球，所以这条不能靠"玩家自己打歪"来兜。 */
+  let bc = bk.newState(1);
+  bc = bk.launch(bc);
+  bc.paddle.x = bk.W / 2 - bc.paddle.w / 2;
+  bc.ball.x = bk.W / 2;
+  bc.ball.y = bk.H - 100;
+  bc.ball.vx = 0;
+  bc.ball.vy = 400;
+  let bounced = false;
+  for (let i = 0; i < 200 && !bounced; i += 1) {
+    bc = bk.step(bc, 1 / 120, { left: false, right: false, targetX: null });
+    if (bc.ball.vy < 0) bounced = true;
+  }
+  const vRatio = Math.hypot(bc.ball.vx, bc.ball.vy) > 0
+    ? Math.abs(bc.ball.vx) / Math.hypot(bc.ball.vx, bc.ball.vy)
+    : 0;
+  ok("板心接球不会把横向分量打没", bounced && vRatio >= bk.MIN_VX_RATIO - 1e-6,
+    `bounced=${bounced} |vx|/speed=${vRatio.toFixed(3)}`);
+
   /* 直接把球砸向砖块：应该消砖并加分 */
   let b3 = bk.newState(1);
   b3 = bk.launch(b3);
@@ -315,6 +336,33 @@ ok("四款内置游戏已挂内核", ["snake", "tetris", "breakout", "2048"].eve
   const dead = [[2, 4, 2, 4], [4, 2, 4, 2], [2, 4, 2, 4], [4, 2, 4, 2]];
   ok("死局判定", g2.canMove(dead) === false);
   ok("有空格不算死局", g2.canMove([[0, 4, 2, 4], [4, 2, 4, 2], [2, 4, 2, 4], [4, 2, 4, 2]]) === true);
+
+  /* 长局不变量：每格要么空要么 2 的幂、分数单调不减、
+     每次有效移动最多新增一格（合并会减少，净变化 = -合并数 + 1）。
+     曾经把这条写成「只减不增」，误报了几百次。 */
+  const dirs = ["left", "right", "up", "down"];
+  let powOk = true;
+  let scoreOk = true;
+  let growOk = true;
+  let overOk = true;
+  let cur = g2.newState();
+  for (let i = 0; i < 3000; i += 1) {
+    if (cur.over) break;
+    for (const row of cur.board) {
+      for (const v of row) if (v && (v & (v - 1)) !== 0) powOk = false;
+    }
+    const next = g2.move(cur, dirs[i % 4]);
+    if (next.score < cur.score) scoreOk = false;
+    const before = cur.board.flat().filter(Boolean).length;
+    const after = next.board.flat().filter(Boolean).length;
+    if (after > before + 1) growOk = false;
+    if (next.over !== !g2.canMove(next.board)) overOk = false;
+    cur = next;
+  }
+  ok("2048 每格都是 2 的幂", powOk);
+  ok("2048 分数单调不减", scoreOk);
+  ok("2048 每次移动最多新增一格", growOk);
+  ok("2048 终局判定与 canMove 一致", overOk);
 }
 
 /* 扫雷 */
@@ -343,11 +391,32 @@ ok("四款内置游戏已挂内核", ["snake", "tetris", "breakout", "2048"].eve
   m3 = ms.place(m3, 100);
   ok("中级布雷 40 颗", m3.cells.filter((c) => c.mine).length === 40, String(m3.cells.filter((c) => c.mine).length));
 
-  /* adj 计算正确（手算一格） */
-  let m4 = ms.newState(0);
-  m4 = ms.place(m4, 40);
-  const guessed = ms.neighbors(m4, 0).filter((n) => m4.cells[n].mine).length;
-  ok("adj 与邻居雷数一致", m4.cells[0].mine || m4.cells[0].adj === guessed, `${m4.cells[0].adj}/${guessed}`);
+  /* adj 计算正确：全部非雷格逐个核对，比只看一格可靠得多 */
+  let adjAllOk = true;
+  let checkedCells = 0;
+  for (let t = 0; t < 8; t += 1) {
+    let mt = ms.newState(t % 2 === 0 ? 0 : 1);
+    mt = ms.place(mt, Math.floor(mt.cells.length / 2));
+    for (let i = 0; i < mt.cells.length; i += 1) {
+      if (mt.cells[i].mine) continue;
+      const want = ms.neighbors(mt, i).filter((n) => mt.cells[n].mine).length;
+      if (mt.cells[i].adj !== want) adjAllOk = false;
+      checkedCells += 1;
+    }
+  }
+  ok("扫雷所有非雷格 adj 都等于周围雷数", adjAllOk, `核对了 ${checkedCells} 格`);
+
+  /* 翻开全部非雷格必须判胜 */
+  let winAll = true;
+  for (let t = 0; t < 4; t += 1) {
+    let mt = ms.newState(0);
+    mt = ms.place(mt, 40);
+    for (let i = 0; i < mt.cells.length && !mt.over; i += 1) {
+      if (!mt.cells[i].mine && mt.cells[i].state === "hidden") mt = ms.reveal(mt, i);
+    }
+    if (!(mt.over && mt.won)) winAll = false;
+  }
+  ok("扫雷翻开所有安全格即获胜", winAll);
 
   /* 踩雷结束 */
   let m5 = ms.newState(0);
@@ -473,13 +542,33 @@ ok("四款内置游戏已挂内核", ["snake", "tetris", "breakout", "2048"].eve
     return st;
   };
   let b1 = mk([[0, 0], [7, 7], [0, 1], [8, 7], [14, 0], [9, 7], [14, 1]]);
-  const stop = gm.aiMove(b1, gm.BLACK, 2);
+  /* 用困难档验证这条：普通档现在故意有 22% 概率漏防（为了拉开三档梯度），
+     拿 L2 跑这条断言会以约 3% 的概率随机失败。困难档实测 60/60 必堵。 */
+  const stop = gm.aiMove(b1, gm.BLACK, 3);
   ok("必须堵对手活三", !!stop && stop.y === 7 && (stop.x === 6 || stop.x === 10), JSON.stringify(stop));
 
   /* 自己有四连时优先成五（哪怕对手也有威胁） */
   let b2 = mk([[0, 0], [7, 7], [0, 1], [8, 7], [0, 2], [9, 7], [0, 3]]);
   const winMove = gm.aiMove(b2, gm.BLACK, 2);
   ok("自己能成五时先赢", !!winMove && winMove.x === 0 && winMove.y === 4, JSON.stringify(winMove));
+
+  /* 普通档有 22% 概率漏防（为了让三档拉开梯度），但「对手下一手即连五」
+     这一点永远要堵 —— 否则就成了眼睁睁看人连五。这里连测 40 次，必须次次都堵。
+     白棋 (5,7)-(8,7) 冲四、左端 (4,7) 被黑占，唯一成五点就是 (9,7)。
+     注意：必须用 place() 一步步铺，不能直接改 board —— aiMove 见到
+     st.moves.length === 0 会当成空盘直接下天元 (7,7)。 */
+  let b3 = gm.newState(false);
+  for (const [x, y] of [
+    [0, 0], [5, 7], [0, 1], [6, 7], [1, 0], [7, 7], [4, 7], [8, 7],
+  ]) {
+    b3 = gm.place(b3, x, y);
+  }
+  let blockFive = 0;
+  for (let i = 0; i < 40; i += 1) {
+    const m = gm.aiMove(b3, gm.BLACK, 2);
+    if (m && m.x === 9 && m.y === 7) blockFive += 1;
+  }
+  ok("普通档漏防也一定堵对手连五", blockFive === 40, `${blockFive}/40`);
 
   /* 三档难度要有可测的强度差（L2 明显强于 L1） */
   const play = (lb, lw) => {
@@ -500,6 +589,28 @@ ok("四款内置游戏已挂内核", ["snake", "tetris", "breakout", "2048"].eve
     if (play(1, 2) === gm.WHITE) l2win += 1;
   }
   ok("普通档明显强于简单档", l2win >= 5, `L2 赢 ${l2win}/16`);
+
+  /* 困难档要明显强于普通档 —— 这条曾长期不成立：纯加权 2-ply 前瞻下
+     L3 与 L2 实为五五开（120 局 18:22 和 80），三档只有两个有效档位。
+     修法是给 L3 加三层硬约束（连五→必堵→双威胁）**并**让 L2 有 22% 概率
+     漏防。
+
+     样本量是被逼出来的：12 局时实测会出现「L3 3 : L2 2」，跑三次两次失败。
+     60 局（30 轮 × 双向）连测 5 轮的实测分布是 L3 27~35 : L2 5~13，
+     最差一轮仍有 45% 胜率。这里取 60 局、门槛 22 胜（37%），
+     同时要求 L3 严格多于 L2。整组约 3.5 秒。 */
+  let l3win = 0;
+  let l2winVs3 = 0;
+  for (let i = 0; i < 30; i += 1) {
+    const r1 = play(3, 2);
+    if (r1 === gm.BLACK) l3win += 1;
+    else if (r1 === gm.WHITE) l2winVs3 += 1;
+    const r2 = play(2, 3);
+    if (r2 === gm.WHITE) l3win += 1;
+    else if (r2 === gm.BLACK) l2winVs3 += 1;
+  }
+  ok("困难档强于普通档", l3win >= 22 && l3win > l2winVs3,
+    `L3 赢 ${l3win}/60，L2 赢 ${l2winVs3}/60`);
 }
 
 /* 中国象棋 */
@@ -626,6 +737,49 @@ ok("四款内置游戏已挂内核", ["snake", "tetris", "breakout", "2048"].eve
   const winMove = xq.ai(mateSt, 2);
   const done = xq.apply(mateSt, winMove);
   ok("AI 会一步杀并终局", done.over === true && done.winner === xq.RED);
+
+  /* ---- 和棋规则 ----
+   * 加这两条之前，AI 对 AI 会无限循环（实测 L2 自对弈第 63 手回到第 59 手的
+   * 局面，内核毫无察觉），只能靠 UI 的 200 手 guard 兜底。 */
+  const drawSt = () => mkSt(mkBoard([
+    { x: 0, y: 0, p: "bK" }, { x: 8, y: 9, p: "rK" },
+    { x: 7, y: 0, p: "bR" }, { x: 1, y: 9, p: "rR" },
+  ]), xq.RED);
+  /* 双方车在各自底线上下反复，4 手一循环 */
+  const loop4 = [[I(1, 9), I(1, 8)], [I(7, 0), I(7, 1)], [I(1, 8), I(1, 9)], [I(7, 1), I(7, 0)]];
+  let repSt = drawSt();
+  let repAt = 0;
+  for (let i = 0; i < 40 && !repSt.over; i += 1) {
+    const [from, to] = loop4[i % 4];
+    const mv = xq.legalMoves(repSt.board, repSt.turn).find((m) => m.from === from && m.to === to);
+    if (!mv) break;
+    repSt = xq.apply(repSt, mv);
+    repAt = i + 1;
+  }
+  ok("象棋三次重复局面判和", repSt.over === true && repSt.winner === xq.DRAW && repSt.drawBy === "repeat",
+    `第 ${repAt} 手 over=${repSt.over} winner=${repSt.winner} by=${repSt.drawBy}`);
+
+  /* 60 回合无吃子：每步清空 posKeys 屏蔽上一条规则，单独验证限着 */
+  let ncSt = drawSt();
+  let ncAt = 0;
+  for (let i = 0; i < 400 && !ncSt.over; i += 1) {
+    const [from, to] = loop4[i % 4];
+    const mv = xq.legalMoves(ncSt.board, ncSt.turn).find((m) => m.from === from && m.to === to)
+      || xq.legalMoves(ncSt.board, ncSt.turn)[0];
+    if (!mv) break;
+    ncSt = xq.apply({ ...ncSt, posKeys: [] }, mv);
+    ncAt = i + 1;
+  }
+  ok("象棋 60 回合无吃子判和", ncSt.over === true && ncSt.winner === xq.DRAW && ncSt.drawBy === "moves",
+    `第 ${ncAt} 手 noCapture=${ncSt.noCapture} by=${ncSt.drawBy}`);
+  ok("象棋吃子会重置无吃子计数", (() => {
+    const b = mkBoard([{ x: 4, y: 0, p: "bK" }, { x: 3, y: 9, p: "rK" },
+      { x: 0, y: 0, p: "rR" }, { x: 0, y: 1, p: "bR" }]);
+    const s0 = { board: b, turn: xq.RED, over: false, winner: 0, history: [], posKeys: [], noCapture: 50 };
+    const mv = xq.legalMoves(b, xq.RED).find((m) => m.from === I(0, 0) && m.to === I(0, 1));
+    if (!mv) return false;
+    return xq.apply(s0, mv).noCapture === 0;
+  })());
 }
 
 /* ------------------------------------------------------------ 掼蛋 */
@@ -820,6 +974,53 @@ ok("四款内置游戏已挂内核", ["snake", "tetris", "breakout", "2048"].eve
     }
   }
   ok("掼蛋 AI 只出自己手里的牌", bad === null, bad || "");
+
+  /* 连打多局：真实玩法是一局接一局（带升级与进贡），单局能打完不代表连打不崩。
+     `out` 是【出完顺序的座位号数组】而不是按座位索引的布尔表，这里必须用
+     includes(seat) 判断谁出完了 —— 用 out[seat] 会把座位号当索引，永远卡死。
+     也别忘了领出不能 pass：gdPass 在没有 lastPlay 时原样返回同一个 state。 */
+  let chain = k.startDeal(null, 0);
+  let chainGames = 0;
+  let chainSteps = 0;
+  let chainBad = null;
+  let chainLevels = chain.levels.slice();
+  while (chainGames < 6 && chainSteps < 6000 && !chainBad) {
+    if (chain.out.length >= 3) {
+      chainLevels = chain.levels.slice();
+      chain = k.startDeal(chain, 0);
+      chainGames += 1;
+      continue;
+    }
+    const seat = chain.turn;
+    if (chain.out.includes(seat)) {
+      chain = k.pass(chain, seat);
+      chainSteps += 1;
+      continue;
+    }
+    const dec = k.aiDecide(chain, seat, 2);
+    let nxt = null;
+    if (dec.cards && dec.cards.length) {
+      const r = k.play(chain, seat, dec.cards);
+      if (r !== chain) nxt = r;
+    }
+    if (!nxt && chain.lastPlay && dec.pass) {
+      const r = k.pass(chain, seat);
+      if (r !== chain) nxt = r;
+    }
+    if (!nxt) {
+      const ps = k.genPlays(chain.hands[seat], chain.level);
+      if (!ps.length) { chainBad = `seat ${seat} step ${chainSteps} 无牌可出`; break; }
+      const r = k.play(chain, seat, ps[ps.length - 1].cards);
+      if (r !== chain) nxt = r;
+    }
+    if (!nxt) { chainBad = `seat ${seat} step ${chainSteps} 卡死`; break; }
+    chain = nxt;
+    chainSteps += 1;
+  }
+  ok("掼蛋能连打 6 局不卡死", chainBad === null && chainGames === 6,
+    chainBad || `${chainGames} 局 ${chainSteps} 步，级牌 ${chainLevels.join("/")}`);
+  ok("掼蛋连打时级牌只升不降",
+    chainLevels.every((v, i) => v >= 2 && v <= 14), chainLevels.join("/"));
 }
 
 /* ------------------------------------------------------------ 组件渲染冒烟 */
